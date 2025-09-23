@@ -1,7 +1,7 @@
 
 UNAME_M := $(shell uname -m)
 
-ifeq ($(UNAME_M),aarch64)
+ifeq ($(UNAME_M),i386-unknown-elf-gdb)
 PREFIX:=i386-unknown-elf-
 BOOTIMG:=/usr/local/grub/lib/grub/i386-pc/boot.img
 GRUBLOC:=/usr/local/grub/bin/
@@ -17,7 +17,7 @@ OBJDUMP := $(PREFIX)objdump
 OBJCOPY := $(PREFIX)objcopy
 SIZE := $(PREFIX)size
 CONFIGS := -DCONFIG_HEAP_SIZE=4096
-CFLAGS := -ffreestanding -mgeneral-regs-only -mno-mmx -m32 -march=i386 -fno-pie -fno-stack-protector -g3 -Wall 
+CFLAGS := -ffreestanding -mgeneral-regs-only -mno-mmx -m32 -march=i386 -fno-pie -fno-stack-protector -g3 -Wall
 
 ODIR = obj
 SDIR = src

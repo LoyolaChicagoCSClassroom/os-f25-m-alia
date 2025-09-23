@@ -1,6 +1,6 @@
 
 
-PREFIX=i686-linux-gnu-
+PREFIX=i386-unknown-elf-
 CC := $(PREFIX)gcc
 LD := $(PREFIX)ld
 OBJDUMP := $(PREFIX)objdump
