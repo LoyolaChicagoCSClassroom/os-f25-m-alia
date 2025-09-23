@@ -1,7 +1,7 @@
 
 UNAME_M := $(shell uname -m)
 
-ifeq ($(UNAME_M),i386-unknown-elf-gdb)
+ifeq ($(UNAME_M),aarch64)
 PREFIX:=i386-unknown-elf-
 BOOTIMG:=/usr/local/grub/lib/grub/i386-pc/boot.img
 GRUBLOC:=/usr/local/grub/bin/
