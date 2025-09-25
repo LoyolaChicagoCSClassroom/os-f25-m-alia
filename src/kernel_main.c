@@ -302,27 +302,20 @@ struct termbuf {
 
 int x = 0;
 int y = 0;
-
-void print_char(char c) {
- char *vram = (char *)0xB8000;
- vram[x*2] = c;
- vram[x*2+1] = 7;
- x++;
-}
+int maxRows = 25; // technically only 24 rows can display at a time, but you need to save the new row somewhere before scrolling
+int rowChars = 80;
 
 void scroll(void) {
-    int maxRows = 25;
-    int rowChars = 80;
     char *vram = (char *)0xB8000;
     int rowBytes = rowChars * 2;
 
-    for (int row = 0; row < maxRows - 1; row = row + 1) {
-        for (int col = 0; col < rowBytes; col = col + 1) {
+    for (int row = 0; row < maxRows - 1; row++) {
+        for (int col = 0; col < rowBytes; col++) {
             vram[row * rowBytes + col] = vram[(row + 1) * rowBytes + col];
         }
     }
 
-    for (int col = 0; col < rowChars; col = col + 1) {
+    for (int col = 0; col < rowChars; col++) {
         vram[(maxRows - 1) * rowBytes + col * 2]     = ' ';
         vram[(maxRows - 1) * rowBytes + col * 2 + 1] = 7;
     }
@@ -330,29 +323,29 @@ void scroll(void) {
 
 int putc(int data) {
     char *vram = (char *)0xB8000;
-    int maxRows = 25;
-    int rowChars = 80;
     int rowBytes = rowChars * 2;
+    // intialize starting address at top left of screen
 
     if (data == '\r') {
-        x = 0;
-        return 0;
+        x = 0; // reset x position
+        return 0; // automatically return and stop if escape character
     } else if (data == '\n') {
         x = 0;
-        y = y + 1;
-    } else {
+        y++; // reset x position back to 0 and iterate y to be next row if newline
+    } else { // otherwise write to screen at position, and update memory
         vram[y * rowBytes + x * 2]     = (char)data;
         vram[y * rowBytes + x * 2 + 1] = 7; 
-        x = x + 1;
-        if (x >= rowChars) {
+        x++; // iterate x after writing to screen
+        if (x >= rowChars) { // if at max charas for the row, move to the next row
             x = 0;
-            y = y + 1;
+            y++;
         }
     }
 
+    // automatically call scroll function when row count gets to 25
     if (y >= maxRows) {
         scroll();
-        y = maxRows - 1;  
+        y = maxRows - 1;  // resets row count back to 24 after scrolling
     }
 }
 
@@ -366,8 +359,8 @@ void main() {
     unsigned short *vram = (unsigned short*)0xb8000; // Base address of video mem
     const unsigned char color = 7; // gray text on black background
 	
+    // testing putc and scroll by printing 24 lines
     for (int line = 0; line < 24; line = line + 1) {
-        // Print "Line XX" followed by newline
         putc('L');
         putc('i');
         putc('n');
@@ -378,6 +371,7 @@ void main() {
         putc('\r');
         putc('\n');
     }
+    	// getting current execution level, also considered 25th line, should scroll the screen up one line
     	int cpl = get_cpl();
 	esp_printf(putc, "Execution level = %d\r\n", cpl);
 
