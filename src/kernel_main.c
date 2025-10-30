@@ -11,6 +11,10 @@
 #define ADDR_FROM_FRAME(f) (((uintptr_t)(f)) << 12)
 #define MAX_PAGE_TABLES 64
 
+#define KERNEL_START 0x100000      // 1 MB
+#define KERNEL_TEST_END 0x110000   // fixed 64 KB kernel for testing
+#define STACK_PAGES 8
+
 struct page_directory_entry
 {
    uint32_t present       : 1;   // Page present in memory
@@ -562,52 +566,52 @@ void main() {
     	int cpl = get_cpl();
 	esp_printf(putc, "Execution level = %d\r\n", cpl);
 
-/* Identity-map 0x100000 -> page-by-page */
-    uintptr_t start = 0x100000;
-    uintptr_t end   = 0x110000; 
 
-    /* Map kernel physical pages one-by-one using tmp ppage */
-    for (uintptr_t a = start; a < end; a += PAGE_SIZE) {
+	for (uintptr_t a = KERNEL_START; a < KERNEL_TEST_END; a += 4096) {
         struct ppage tmp;
         tmp.next = NULL;
-        tmp.physical_addr = (void *)a;   /* physical == virtual for identity mapping */
-        /* map_pages expects list; we map one page at a time */
+        tmp.physical_addr = (void *)a;
         if (!map_pages((void *)a, &tmp, pd_global)) {
-        // mapping failed, hang
-        while(1);
+            // Mapping failed
+            vram[0] = (unsigned short)('F' | 0x0F00); // show failure
+            while(1);
+        }
     }
-}
 
-
-    uint32_t esp;
+	uint32_t esp;
     asm volatile("mov %%esp, %0" : "=r"(esp));
-    /* Map downwards from current esp rounded down to page boundary */
-    uintptr_t stack_top = page_align_down(esp);
-    const int STACK_PAGES = 8; /* adjust as needed */
-    for (int i = 0; i < STACK_PAGES; ++i) {
+    uintptr_t stack_top = esp & ~(4096 - 1); // round down to page
+    for (int i = 0; i < STACK_PAGES; i++) {
         uintptr_t a = stack_top - i * PAGE_SIZE;
         struct ppage tmp;
         tmp.next = NULL;
-        tmp.physical_addr = (void *)a; /* identity map */
-        if (!map_pages((void *)a, &tmp, pd_global)) {
-            for (;;) ; /* error handling */
-        }
+        tmp.physical_addr = (void *)a;
+        if (!map_pages((void *)a, &tmp, pd_global)) while(1);
     }
-
-    /* Map video buffer at 0xB8000 (one page) */
-    {
+{
         struct ppage tmp;
         tmp.next = NULL;
         tmp.physical_addr = (void *)0xB8000;
-        if (!map_pages((void *)0xB8000, &tmp, pd_global)) {
-            for (;;) ;
-        }
+        if (!map_pages((void *)0xB8000, &tmp, pd_global)) while(1);
     }
-
     /* Load page directory into CR3 and enable paging. */
     loadPageDirectory(pd_global);
     enable_paging();
-	
+
+{
+        struct ppage tmp;
+        tmp.next = NULL;
+        tmp.physical_addr = (void *)0x200000; // test page
+        void *result = map_pages((void *)0x200000, &tmp, pd_global);
+        if (result) {
+            vram[0] = (unsigned short)('O' | 0x0F00); // success
+            volatile uint32_t *test = (uint32_t *)0x200000;
+            *test = 0x12345678; // write something to test mapping
+        } else {
+            vram[0] = (unsigned short)('F' | 0x0F00); // failure
+        }
+    }
+
     while(1) {
         uint8_t status = inb(0x64);
         if((status & 1) == 1) {
