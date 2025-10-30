@@ -1,7 +1,90 @@
 
 #include <stdint.h>
-
+#include <string.h>
+#include "page.h"
 #define MULTIBOOT2_HEADER_MAGIC         0xe85250d6
+#define PAGE_SIZE 4096U
+#define PAGE_MASK (~(PAGE_SIZE - 1U))
+#define PD_INDEX(v) (((uintptr_t)(v) >> 22) & 0x3FF)
+#define PT_INDEX(v) (((uintptr_t)(v) >> 12) & 0x3FF)
+#define FRAME_FROM_ADDR(a) (((uintptr_t)(a)) >> 12)
+#define ADDR_FROM_FRAME(f) (((uintptr_t)(f)) << 12)
+#define MAX_PAGE_TABLES 64
+
+struct page_directory_entry
+{
+   uint32_t present       : 1;   // Page present in memory
+   uint32_t rw            : 1;   // Read/write
+   uint32_t user          : 1;   // User-mode if set
+   uint32_t writethru     : 1;
+   uint32_t cachedisabled : 1;
+   uint32_t accessed      : 1;
+   uint32_t pagesize      : 1;
+   uint32_t ignored       : 2;
+   uint32_t os_specific   : 3;
+   uint32_t frame         : 20;  // Frame address (>>12)
+} __attribute__((packed));
+
+struct page
+{
+   uint32_t present    : 1;
+   uint32_t rw         : 1;
+   uint32_t user       : 1;
+   uint32_t accessed   : 1;
+   uint32_t dirty      : 1;
+   uint32_t unused     : 7;
+   uint32_t frame      : 20;    // Frame address (>>12)
+} __attribute__((packed));
+
+static inline uintptr_t page_align_down(uintptr_t a) {
+    return a & (uintptr_t)PAGE_MASK;
+}
+
+struct page_directory_entry pd_global[1024] __attribute__((aligned(4096)));
+static struct page pt_pool[MAX_PAGE_TABLES][1024] __attribute__((aligned(4096)));
+static uint8_t pt_used[MAX_PAGE_TABLES] = {0};
+
+/* allocate a page table from pool, return pointer or NULL if exhausted */
+static struct page *allocate_page_table(void) {
+    for (int i = 0; i < MAX_PAGE_TABLES; ++i) {
+        if (!pt_used[i]) {
+            pt_used[i] = 1;
+            /* zero the new page table manually */
+            for (int j = 0; j < 1024; ++j) {   // assuming 1024 entries per page table
+                pt_pool[i][j].present    = 0;
+                pt_pool[i][j].rw         = 0;
+                pt_pool[i][j].user       = 0;
+                pt_pool[i][j].accessed   = 0;
+                pt_pool[i][j].dirty      = 0;
+                pt_pool[i][j].unused     = 0;
+                pt_pool[i][j].frame      = 0;
+            }
+            return pt_pool[i];
+        }
+    }   
+    return NULL; 
+}       
+        
+static void free_page_table(struct page *pt) {
+    /* find index */
+    uintptr_t base = (uintptr_t)pt;
+    for (int i = 0; i < MAX_PAGE_TABLES; ++i) {
+        if ((uintptr_t)pt_pool[i] == base) {
+            pt_used[i] = 0;
+            /* zero the page table manually */
+            for (int j = 0; j < 1024; ++j) {
+                pt_pool[i][j].present    = 0;
+                pt_pool[i][j].rw         = 0;
+                pt_pool[i][j].user       = 0;
+                pt_pool[i][j].accessed   = 0;
+                pt_pool[i][j].dirty      = 0;
+                pt_pool[i][j].unused     = 0;
+                pt_pool[i][j].frame      = 0;
+            }
+            return;
+        } 
+    }
+}
 
 /*---------------------------------------------------*/
 /* Public Domain version of printf                   */
@@ -398,10 +481,71 @@ int get_cpl() {
     	return cs & 3; 
 }
 
+ /* Returns the (input) vaddr mapped on success, or NULL on failure (e.g., out of pt pool).
+ */
+void *map_pages(void *vaddr, struct ppage *pglist, struct page_directory_entry *pd) {
+    if (!vaddr || !pglist || !pd) return NULL;
+
+    uintptr_t va = (uintptr_t)vaddr;
+    struct ppage *cur = pglist;
+
+    while (cur) {
+        uint32_t pd_idx = PD_INDEX(va);
+        uint32_t pt_idx = PT_INDEX(va);
+
+        /* Allocate a page table if not present */
+        if (!pd[pd_idx].present) {
+            struct page *new_pt = allocate_page_table();
+            if (!new_pt)
+                return NULL;  // out of tables
+
+            pd[pd_idx].present = 1;
+            pd[pd_idx].rw = 1;
+            pd[pd_idx].user = 0;
+            pd[pd_idx].frame = FRAME_FROM_ADDR((uintptr_t)new_pt);
+        }
+
+        /* Retrieve the page table from PDE */
+        struct page *pt = (struct page *)ADDR_FROM_FRAME(pd[pd_idx].frame);
+
+        /* Create mapping */
+        pt[pt_idx].present = 1;
+        pt[pt_idx].rw = 1;
+        pt[pt_idx].user = 0;
+        pt[pt_idx].frame = FRAME_FROM_ADDR(cur->physical_addr);
+
+        va += PAGE_SIZE;
+        cur = cur->next;
+    }
+
+    return vaddr;
+}
+
+/* --- Helper to load page directory into CR3 --- */
+void loadPageDirectory(struct page_directory_entry *pd) {
+    /* pd must be physical address of page directory; we assume identity mapping here. */
+    asm volatile("mov %0,%%cr3"
+                 :
+                 : "r"(pd)
+                 : );
+}
+
+/* --- Enable paging by setting CR0.PG (bit 31) and CR0.PE (bit 0). --- */
+void enable_paging(void) {
+    asm volatile(
+        "mov %%cr0, %%eax\n"
+        "or $0x80000001, %%eax\n"
+        "mov %%eax, %%cr0\n"
+        :
+        :
+        : "eax");
+}
+
 void main() {
     unsigned short *vram = (unsigned short*)0xb8000; // Base address of video mem
     const unsigned char color = 7; // gray text on black background
-	
+
+
     // testing putc and scroll by printing 24 lines
     for (int line = 0; line < 24; line = line + 1) {
         putc('L');
@@ -418,14 +562,61 @@ void main() {
     	int cpl = get_cpl();
 	esp_printf(putc, "Execution level = %d\r\n", cpl);
 
-    	while(1) {
+/* Identity-map 0x100000 -> page-by-page */
+    uintptr_t start = 0x100000;
+    uintptr_t end   = 0x110000; 
+
+    /* Map kernel physical pages one-by-one using tmp ppage */
+    for (uintptr_t a = start; a < end; a += PAGE_SIZE) {
+        struct ppage tmp;
+        tmp.next = NULL;
+        tmp.physical_addr = (void *)a;   /* physical == virtual for identity mapping */
+        /* map_pages expects list; we map one page at a time */
+        if (!map_pages((void *)a, &tmp, pd_global)) {
+        // mapping failed, hang
+        while(1);
+    }
+}
+
+
+    uint32_t esp;
+    asm volatile("mov %%esp, %0" : "=r"(esp));
+    /* Map downwards from current esp rounded down to page boundary */
+    uintptr_t stack_top = page_align_down(esp);
+    const int STACK_PAGES = 8; /* adjust as needed */
+    for (int i = 0; i < STACK_PAGES; ++i) {
+        uintptr_t a = stack_top - i * PAGE_SIZE;
+        struct ppage tmp;
+        tmp.next = NULL;
+        tmp.physical_addr = (void *)a; /* identity map */
+        if (!map_pages((void *)a, &tmp, pd_global)) {
+            for (;;) ; /* error handling */
+        }
+    }
+
+    /* Map video buffer at 0xB8000 (one page) */
+    {
+        struct ppage tmp;
+        tmp.next = NULL;
+        tmp.physical_addr = (void *)0xB8000;
+        if (!map_pages((void *)0xB8000, &tmp, pd_global)) {
+            for (;;) ;
+        }
+    }
+
+    /* Load page directory into CR3 and enable paging. */
+    loadPageDirectory(pd_global);
+    enable_paging();
+	
+    while(1) {
         uint8_t status = inb(0x64);
-	if((status & 1) == 1) {
+        if((status & 1) == 1) {
             uint8_t scancode = inb(0x60);
             if (scancode < 128) {
             esp_printf(putc, "0x%02x %c\n",  scancode, keyboard_map[scancode]);
-	    }
-	}
+            }
+        }
     }
+
 }
 
